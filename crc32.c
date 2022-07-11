@@ -1,5 +1,5 @@
 /* crc32.c -- compute the CRC-32 of a data stream
- * Copyright (C) 1995-2006, 2010, 2011, 2012, 2016, 2018 Mark Adler
+ * Copyright (C) 1995-2022 Mark Adler
  * For conditions of distribution and use, see copyright notice in zlib.h
  *
  * This interleaved implementation of a CRC makes use of pipelined multiple
@@ -109,11 +109,12 @@ local z_crc_t multmodp OF((z_crc_t a, z_crc_t b));
 local z_crc_t x2nmodp OF((z_off64_t n, unsigned k));
 
 /* If available, use the ARM processor CRC32 instruction. */
-#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32) && W == 8
-#  define ARMCRC32
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32) && W == 8 \
+    && defined(USE_CANONICAL_ARMV8_CRC32)
+#  define ARMCRC32_CANONICAL_ZLIB
 #endif
 
-#if defined(W) && (!defined(ARMCRC32) || defined(DYNAMIC_CRC_TABLE))
+#if defined(W) && (!defined(ARMCRC32_CANONICAL_ZLIB) || defined(DYNAMIC_CRC_TABLE))
 /*
   Swap the bytes in a z_word_t to convert between little and big endian. Any
   self-respecting compiler will optimize this to a single machine byte-swap
@@ -275,7 +276,6 @@ local once_t made = ONCE_INIT;
   information needed to generate CRCs on data a byte at a time for all
   combinations of CRC register values and incoming bytes.
  */
-
 local void make_crc_table()
 {
     unsigned i, j, n;
@@ -606,7 +606,7 @@ const z_crc_t FAR * ZEXPORT get_crc_table()
  * -march=armv8-a+crc, or -march=native if the compile machine has the crc32
  * instructions.
  */
-#ifdef ARMCRC32
+#if ARMCRC32_CANONICAL_ZLIB
 
 /*
    Constants empirically determined to maximize speed. These values are from
@@ -636,7 +636,7 @@ unsigned long ZEXPORT crc32_z(crc, buf, len)
 #endif /* DYNAMIC_CRC_TABLE */
 
     /* Pre-condition the CRC */
-    crc ^= 0xffffffff;
+    crc = (~crc) & 0xffffffff;
 
     /* Compute the CRC up to a word boundary. */
     while (len && ((z_size_t)buf & 7) != 0) {
@@ -784,9 +784,8 @@ unsigned long ZEXPORT crc32_z(crc, buf, len)
 #ifdef DYNAMIC_CRC_TABLE
     once(&made, make_crc_table);
 #endif /* DYNAMIC_CRC_TABLE */
-
     /* Pre-condition the CRC */
-    crc ^= 0xffffffff;
+    crc = (~crc) & 0xffffffff;
 
 #ifdef W
 
@@ -1130,7 +1129,7 @@ uLong ZEXPORT crc32_combine64(crc1, crc2, len2)
 #ifdef DYNAMIC_CRC_TABLE
     once(&made, make_crc_table);
 #endif /* DYNAMIC_CRC_TABLE */
-    return multmodp(x2nmodp(len2, 3), crc1) ^ crc2;
+    return multmodp(x2nmodp(len2, 3), crc1) ^ (crc2 & 0xffffffff);
 }
 
 /* ========================================================================= */
@@ -1141,7 +1140,6 @@ uLong ZEXPORT crc32_combine(crc1, crc2, len2)
 {
     return crc32_combine64(crc1, crc2, len2);
 }
-
 /* ========================================================================= */
 uLong ZEXPORT crc32_combine_gen64(len2)
     z_off64_t len2;
@@ -1160,12 +1158,12 @@ uLong ZEXPORT crc32_combine_gen(len2)
 }
 
 /* ========================================================================= */
-uLong crc32_combine_op(crc1, crc2, op)
+uLong ZEXPORT crc32_combine_op(crc1, crc2, op)
     uLong crc1;
     uLong crc2;
     uLong op;
 {
-    return multmodp(op, crc1) ^ crc2;
+    return multmodp(op, crc1) ^ (crc2 & 0xffffffff);
 }
 
 ZLIB_INTERNAL void crc_reset(deflate_state *const s)
